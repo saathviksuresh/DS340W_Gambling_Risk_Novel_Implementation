@@ -1,0 +1,10 @@
+.RData
+.Rhistory
+.Renviron
+.Rproj.user/
+
+novel_analysis.tex
+
+renv/library/
+renv/staging/
+renv/cache/

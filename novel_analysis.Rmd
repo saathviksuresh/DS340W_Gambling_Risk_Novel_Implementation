@@ -1,0 +1,1874 @@
+---
+title: "Novel Gambling Behavior Analysis"
+author: "Saathvik Suresh"
+date: "2026-11-17"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+
+```
+
+```{r load-raw-data}
+raw_sample1 <- read.csv(
+  "calcdata/satoshidice_bets_matched__2012-05-02_to_2012-05-22_clean.csv"
+)
+
+raw_sample2 <- read.csv(
+  "calcdata/satoshidice_bets_matched__2012-09-17_to_2012-10-07_clean.csv"
+)
+
+raw_sample3 <- read.csv(
+  "calcdata/satoshidice_bets_matched__2012-12-17_to_2013-01-06_clean.csv"
+)
+
+raw_sample4 <- read.csv(
+  "calcdata/satoshidice_bets_matched__2013-05-04_to_2013-05-24_clean.csv"
+)
+
+raw_sample5 <- read.csv(
+  "calcdata/satoshidice_bets_matched__2013-09-11_to_2013-10-01_clean.csv"
+)
+dim(raw_sample1)
+dim(raw_sample2)
+dim(raw_sample3)
+dim(raw_sample4)
+dim(raw_sample5)
+```
+
+# 2. Parent Paper Preprocessing
+##2.1 Core Preprocessing Functions
+```{r}
+normalizeToBitcoin <- function(user_bets) {
+  user_bets %>% 
+    mutate(
+      bet_value = bet_value * 1e-8,
+      answer_value = answer_value * 1e-8
+    )
+}
+
+aggregateUser <- function(user_bets) {
+  user_bets %>% 
+    mutate(
+      last_outcome = answer_value - bet_value,
+      win_answer_value = ifelse(
+        status == "win",
+        answer_value - bet_value,
+        0
+      ),
+      loose_answer_value = ifelse(
+        status == "loss",
+        answer_value - bet_value,
+        0
+      )
+    ) %>%
+    mutate(
+      dice_balance = cumsum(answer_value - bet_value),
+      winsum = cumsum(win_answer_value),
+      loosesum = cumsum(loose_answer_value)
+    )
+}
+
+addlag <- function(user_bets) {
+  user_bets %>% 
+    mutate(
+      bet_pred = lead(bet_value, n = 1),
+      game_pred = lead(odds, n = 1),
+      time_nextbet = lead(time_bet, n = 1),
+      status_pred = lead(status, n = 1)
+    )
+}
+```
+## 2.2 Winning Probability Lookup
+```{r}
+# Game table used in the parent paper to map odds to implied win probability
+pwin_to_prob <- c(
+  "lessthan","64000","1dice9wVtrKZTBbAZqz1XiTmboYyvpD3t","97.6563","1.004","1.900","98.100","0.0010","250.0000",
+  "lessthan","60000","1diceDCd27Cc22HV3qPNZKwGnZ8QwhLTc","91.5527","1.071","1.900","98.100","0.0010","250.0000",
+  "lessthan","56000","1dicegEArYHgbwQZhvr5G9Ah2s7SFuW1y","85.4492","1.147","1.900","98.100","0.0010","250.0000",
+  "lessthan","52000","1dicec9k7KpmQaA8Uc8aCCxfWnwEWzpXE","79.3457","1.235","1.900","98.100","0.0010","250.0000",
+  "lessthan","48000","1dice9wcMu5hLF4g81u8nioL5mmSHTApw","73.2422","1.338","1.900","98.100","0.0010","250.0000",
+  "lessthan","32768","1dice97ECuByXAvqXpaYzSaQuPVvrtmz6","50.0000","1.957","1.900","98.100","0.0010","250.0000",
+  "lessthan","32000","1dice8EMZmqKvrGE4Qc9bUFf9PX3xaYDp","48.8281","2.004","1.900","98.100","0.0010","250.0000",
+  "lessthan","24000","1dice7W2AicHosf5EL3GFDUVga7TgtPFn","36.6211","2.670","1.900","98.100","0.0010","250.0000",
+  "lessthan","16000","1dice7fUkz5h4z2wPc1wLMPWgB5mDwKDx","24.4141","4.003","1.900","98.100","0.0010","219.6353",
+  "lessthan","12000","1dice7EYzJag7SxkdKXLr8Jn14WUb3Cf1","18.3105","5.335","1.900","98.100","0.0010","152.1241",
+  "lessthan","8000","1dice6YgEVBf88erBFra9BHf6ZMoyvG88","12.2070","8.000","1.900","98.100","0.0010","120.9568",
+  "lessthan","6000","1dice6wBxymYi3t94heUAG6MpG5eceLG1","9.1553","10.666","1.900","98.100","0.0010","120.9090",
+  "lessthan","4000","1dice6GV5Rz2iaifPvX7RMjfhaNPC8SXH","6.1035","15.996","1.900","98.100","0.0010","77.9318",
+  "lessthan","3000","1dice6gJgPDYz8PLQyJb8cgPBnmWqCSuF","4.5776","21.326","1.900","98.100","0.0010","57.4951",
+  "lessthan","2000","1dice6DPtUMBpWgv8i4pG8HMjXv9qDJWN","3.0518","31.987","1.900","98.100","0.0010","59.3926",
+  "lessthan","1500","1dice61SNWEKWdA8LN6G44ewsiQfuCvge","2.2888","42.647","1.900","98.100","0.0010","44.1897",
+  "lessthan","1000","1dice5wwEZT2u6ESAdUGG6MHgCpbQqZiy","1.5259","63.968","1.900","98.100","0.0010","29.2270",
+  "lessthan","512","1dice4J1mFEvVuFqD14HzdViHFGi9h4Pp","0.7813","124.933","1.900","98.100","0.0010","14.8497",
+  "lessthan","256","1dice3jkpTvevsohA4Np1yP4uKzG1SRLv","0.3906","249.861","1.900","98.100","0.0010","7.3951",
+  "lessthan","128","1dice37EemX64oHssTreXEFT3DXtZxVXK","0.1953","499.717","1.900","98.100","0.0010","3.6902",
+  "lessthan","64","1dice2zdoxQHpGRNaAWiqbK82FQhr4fb5","0.0977","999.429","1.900","98.100","0.0010","3.2050",
+  "lessthan","32","1dice2xkjAAiphomEJA5NoowpuJ18HT1s","0.0488","1998.853","1.900","98.100","0.0010","1.6017",
+  "lessthan","16","1dice2WmRTLf1dEk4HH3Xs8LDuXzaHEQU","0.0244","3997.701","1.900","98.100","0.0010","0.8006",
+  "lessthan","8","1dice2vQoUkQwDMbfDACM1xz6svEXdhYb","0.0122","7995.397","1.900","98.100","0.0010","0.4002",
+  "lessthan","4","1dice2pxmRZrtqBVzixvWnxsMa7wN2GCK","0.0061","15990.789","1.900","98.100","0.0010","0.2001",
+  "lessthan","2","1dice1Qf4Br5EYjj9rnHWqgMVYnQWehYG","0.0031","31981.573","1.900","98.100","0.0010","0.1000",
+  "lessthan","1","1dice1e6pdhLzzWQq7yMidf6j8eAg7pkY","0.0015","64000.000","1.844","98.156","0.0010","0.0500"
+) %>%
+  matrix(
+    ncol = 9,
+    byrow = TRUE,
+    dimnames = list(
+      NULL,
+      c(
+        "Name","Name2","Address","pwin","odds",
+        "House cut (%)","Expected return (%)",
+        "Min bet (BTC)","Max bet (BTC)"
+      )
+    )
+  ) %>%
+  as_tibble() %>%
+  select(odds, pwin) %>%
+  type_convert()
+
+```
+##2.3 User-Level Transaction Preparation
+```{r user-preparation}
+extractAndPrepareUser <- function(x, ...) {
+  
+  ret <- x %>%
+    arrange(time_bet) %>% 
+    normalizeToBitcoin() %>% 
+    addlag() %>% 
+    aggregateUser() %>% 
+    left_join(pwin_to_prob, by = "odds") %>%
+    left_join(
+      pwin_to_prob %>% rename(pwin_pred = pwin),
+      by = c("game_pred" = "odds")
+    ) %>%
+    mutate(
+      bet_changed = bet_pred != bet_value,
+      game_changed = game_pred != odds,
+      exp_changed = bet_pred * game_pred != bet_value * odds,
+      
+      bet_changed_factor =
+        sign(bet_value - bet_pred) %>% factor(levels = c(0, 1, -1)),
+      
+      game_changed_factor =
+        sign(game_pred - odds) %>% factor(levels = c(0, 1, -1)),
+      
+      exp_changed_factor =
+        sign(bet_pred * game_pred - bet_value * odds) %>%
+        factor(levels = c(0, 1, -1)),
+      
+      expectation = bet_pred * game_pred,
+      exp_change_ratio =
+        log(bet_pred * game_pred / (bet_value * odds)),
+      bet_change_ratio =
+        log(bet_pred / bet_value),
+      game_diff_ratio =
+        log(pwin_pred / pwin),
+      
+      win_cumm_log =
+        log10(1 + abs(winsum)),
+      loose_cumm_log =
+        log10(1 + abs(loosesum)),
+      dice_balance_log =
+        log10(1 + abs(dice_balance)),
+      dice_balance_sign =
+        as.character(sign(dice_balance)),
+      
+      streak = 0,
+      difftime = time_nextbet - time_bet,
+      stayed =
+        !((time_nextbet - time_bet) > 4 * 3600) &
+        (timediff < 3600),
+      stay_length = 1,
+      game_streak = 0,
+      streak_total_length = 0,
+      streak_balance = 0
+    ) %>%
+    drop_na()
+
+  for (i in 1:nrow(ret)) {
+    
+    if (i == 1) {
+      
+      ret$streak[i] = 0
+      ret$stay_length[i] = 1
+      ret$game_streak[i] = 0
+      ret$streak_balance[i] = 0
+      
+    } else {
+      
+      # Win/loss streak
+      if (ret$status[i] == ret$status[i - 1]) {
+        ret$streak[i] =
+          ret$streak[i - 1] + 1
+        
+        ret$streak_balance[i] =
+          ret$streak_balance[i - 1] +
+          ret$answer_value[i] -
+          ret$bet_value[i]
+        
+      } else {
+        ret$streak[i] = 0
+        ret$streak_balance[i] = 0
+      }
+      
+      # Session/stay length
+      if (ret$stayed[i]) {
+        ret$stay_length[i] =
+          ret$stay_length[i - 1] + 1
+      } else {
+        ret$stay_length[i] = 1
+      }
+      
+      # Same-game streak
+      if (!ret$game_changed[i]) {
+        ret$game_streak[i] =
+          ret$game_streak[i - 1] + 1
+      } else {
+        ret$game_streak[i] = 0
+      }
+    }
+  }
+
+  for (i in nrow(ret):1) {
+    
+    if (i == nrow(ret)) {
+      
+      ret$streak_total_length[i] =
+        ret$streak[i]
+      
+      streak_total_length =
+        ret$streak[i]
+      
+    } else {
+      
+      if (streak_total_length & ret$streak[i]) {
+        
+        ret$streak_total_length[i] =
+          streak_total_length
+        
+      } else if (streak_total_length & !ret$streak[i]) {
+        
+        ret$streak_total_length[i] =
+          streak_total_length
+        
+        streak_total_length = 0
+        
+      } else if (!streak_total_length & ret$streak[i]) {
+        
+        streak_total_length =
+          ret$streak[i]
+        
+        ret$streak_total_length[i] =
+          streak_total_length
+        
+      } else {
+        
+        ret$streak_total_length[i] =
+          streak_total_length
+      }
+    }
+  }
+
+  return(
+    ret %>%
+      arrange(time_bet)
+  )
+}
+
+prepare_user_table <- function(user_bets_matched, min_games = 2, ...) {
+  
+  user_bets_matched %>% 
+    drop_na() %>%
+    group_by(userID) %>% 
+    mutate(ngamez = n()) %>% 
+    filter(ngamez > min_games) %>%
+    group_modify(extractAndPrepareUser) %>%
+    ungroup()
+}
+```
+## 2.4 Apply Preprocessing to Samples
+```{r}
+prepared_sample1 <- prepare_user_table(raw_sample1)
+prepared_sample2 <- prepare_user_table(raw_sample2)
+prepared_sample3 <- prepare_user_table(raw_sample3)
+prepared_sample4 <- prepare_user_table(raw_sample4)
+prepared_sample5 <- prepare_user_table(raw_sample5)
+
+dim(prepared_sample1)
+dim(prepared_sample2)
+dim(prepared_sample3)
+dim(prepared_sample4)
+dim(prepared_sample5)
+
+
+```
+# 3. Construct Player Active-Day Timelines
+
+## 3.1 Test Active-Day Mapping on Samples
+```{r}
+create_active_day_map <- function(prepared_sample) {
+  prepared_sample %>%
+    mutate(
+      date = as.POSIXct(time_bet, origin = "1970-01-01") %>%
+        as.Date()
+    ) %>%
+    distinct(userID, date) %>%
+    arrange(userID, date) %>%
+    group_by(userID) %>%
+    mutate(active_day = row_number()) %>%
+    ungroup()
+}
+
+active_day_map_sample1 <- create_active_day_map(prepared_sample1)
+active_day_map_sample2 <- create_active_day_map(prepared_sample2)
+active_day_map_sample3 <- create_active_day_map(prepared_sample3)
+active_day_map_sample4 <- create_active_day_map(prepared_sample4)
+active_day_map_sample5 <- create_active_day_map(prepared_sample5)
+
+head(active_day_map_sample1, 20)
+head(active_day_map_sample2, 20)
+head(active_day_map_sample3, 20)
+head(active_day_map_sample4, 20)
+head(active_day_map_sample5, 20)
+```
+
+
+## 3.2 Parent-Paper Player Eligibility
+```{r}
+create_parent_datemap <- function(prepared_sample) {
+  prepared_sample %>%
+    mutate(
+      date = as.POSIXct(time_bet, origin = "1970-01-01") %>%
+        as.Date()
+    ) %>%
+    count(userID, date, name = "nplays") %>%
+    group_by(userID) %>%
+    arrange(date, .by_group = TRUE) %>%
+    mutate(
+      nthday = row_number(),
+      first_betday = min(date)
+    ) %>%
+    ungroup() %>%
+    filter(
+      first_betday < max(date) - 10
+    )
+}
+
+parent_datemap_sample1 <- create_parent_datemap(prepared_sample1)
+parent_datemap_sample2 <- create_parent_datemap(prepared_sample2)
+parent_datemap_sample3 <- create_parent_datemap(prepared_sample3)
+parent_datemap_sample4 <- create_parent_datemap(prepared_sample4)
+parent_datemap_sample5 <- create_parent_datemap(prepared_sample5)
+```
+
+```{r}
+get_parent_eligible_players <- function(active_day_map) {
+
+  sample_end <- max(active_day_map$date)
+
+  active_day_map %>%
+    group_by(userID) %>%
+    summarise(
+      first_betday = min(date),
+      total_active_days = max(active_day),
+      .groups = "drop"
+    ) %>%
+    filter(
+      first_betday < sample_end - 10
+    )
+}
+
+eligible_sample1 <- get_parent_eligible_players(active_day_map_sample1)
+eligible_sample2 <- get_parent_eligible_players(active_day_map_sample2)
+eligible_sample3 <- get_parent_eligible_players(active_day_map_sample3)
+eligible_sample4 <- get_parent_eligible_players(active_day_map_sample4)
+eligible_sample5 <- get_parent_eligible_players(active_day_map_sample5)
+
+tibble(
+  sample = 1:5,
+  eligible_players = c(
+    nrow(eligible_sample1),
+    nrow(eligible_sample2),
+    nrow(eligible_sample3),
+    nrow(eligible_sample4),
+    nrow(eligible_sample5)
+  )
+)
+```
+
+
+
+```{r}
+count_cluster_eligible <- function(eligible_players, active_day_map) {
+  active_day_map %>%
+    semi_join(eligible_players, by = "userID") %>%
+    group_by(userID) %>%
+    summarise(
+      total_active_days = max(active_day),
+      .groups = "drop"
+    ) %>%
+    filter(total_active_days >= 4) %>%
+    summarise(
+      cluster_eligible_players = n()
+    )
+}
+
+tibble(
+  sample = 1:5,
+  cluster_eligible_players = c(
+    count_cluster_eligible(eligible_sample1, active_day_map_sample1)$cluster_eligible_players,
+    count_cluster_eligible(eligible_sample2, active_day_map_sample2)$cluster_eligible_players,
+    count_cluster_eligible(eligible_sample3, active_day_map_sample3)$cluster_eligible_players,
+    count_cluster_eligible(eligible_sample4, active_day_map_sample4)$cluster_eligible_players,
+    count_cluster_eligible(eligible_sample5, active_day_map_sample5)$cluster_eligible_players
+  )
+)
+```
+
+# 4. Sample Construction
+
+## 4.1 Sample 1 Construction
+```{r}
+analysis_players_sample1 <- active_day_map_sample1 %>%
+  semi_join(eligible_sample1, by = "userID") %>%
+  group_by(userID) %>%
+  filter(max(active_day) >= 4) %>%
+  ungroup()
+
+
+transactions_with_day_sample1 <- prepared_sample1 %>%
+  mutate(
+    date = as.POSIXct(time_bet, origin = "1970-01-01") %>%
+      as.Date()
+  ) %>%
+  inner_join(
+    analysis_players_sample1 %>%
+      select(userID, date, active_day),
+    by = c("userID", "date")
+  )
+
+
+observation_sample1 <- transactions_with_day_sample1 %>%
+  filter(active_day %in% 1:3)
+
+target_sample1 <- transactions_with_day_sample1 %>%
+  filter(active_day %in% 4:10)
+
+n_distinct(observation_sample1$userID)
+n_distinct(target_sample1$userID)
+```
+## 4.2 Application to Samples
+```{r}
+create_analysis_sets <- function(prepared_sample, active_day_map, eligible_players) {
+
+  analysis_players <- active_day_map %>%
+    semi_join(eligible_players, by = "userID") %>%
+    group_by(userID) %>%
+    filter(max(active_day) >= 4) %>%
+    ungroup()
+
+  transactions_with_day <- prepared_sample %>%
+    mutate(
+      date = as.POSIXct(time_bet, origin = "1970-01-01") %>%
+        as.Date()
+    ) %>%
+    inner_join(
+      analysis_players %>%
+        select(userID, date, active_day),
+      by = c("userID", "date")
+    )
+
+  observation_set <- transactions_with_day %>%
+    filter(active_day %in% 1:3)
+
+  target_set <- transactions_with_day %>%
+    filter(active_day %in% 4:10)
+
+  list(
+    observation = observation_set,
+    target = target_set
+  )
+}
+
+
+sets_sample1 <- create_analysis_sets(
+  prepared_sample1,
+  active_day_map_sample1,
+  eligible_sample1
+)
+
+sets_sample2 <- create_analysis_sets(
+  prepared_sample2,
+  active_day_map_sample2,
+  eligible_sample2
+)
+
+sets_sample3 <- create_analysis_sets(
+  prepared_sample3,
+  active_day_map_sample3,
+  eligible_sample3
+)
+
+sets_sample4 <- create_analysis_sets(
+  prepared_sample4,
+  active_day_map_sample4,
+  eligible_sample4
+)
+
+sets_sample5 <- create_analysis_sets(
+  prepared_sample5,
+  active_day_map_sample5,
+  eligible_sample5
+)
+
+
+tibble(
+  sample = 1:5,
+  observation_players = c(
+    n_distinct(sets_sample1$observation$userID),
+    n_distinct(sets_sample2$observation$userID),
+    n_distinct(sets_sample3$observation$userID),
+    n_distinct(sets_sample4$observation$userID),
+    n_distinct(sets_sample5$observation$userID)
+  ),
+  target_players = c(
+    n_distinct(sets_sample1$target$userID),
+    n_distinct(sets_sample2$target$userID),
+    n_distinct(sets_sample3$target$userID),
+    n_distinct(sets_sample4$target$userID),
+    n_distinct(sets_sample5$target$userID)
+  )
+)
+```
+
+# 5. Construct Casual/Intensive Clustering Target
+
+## 5.1 Build Target-Period Clustering Features
+```{r}
+create_target_stats <- function(target_set) {
+  target_set %>%
+    mutate(
+      log10_bet_value = log10(bet_value),
+      payout_value = answer_value - bet_value
+    ) %>%
+    group_by(userID) %>%
+    summarise(
+      ngames = log10(n()),
+      ndays = n_distinct(date),
+      session_per_day = (sum(difftime > 3600) + 1) / n_distinct(date),
+      pwin_median = median(pwin),
+      pwin_width = max(pwin) - min(pwin),
+      bet_mean_log10 = mean(log10_bet_value),
+      bet_max_log10 = max(log10_bet_value),
+      payout_total = sum(payout_value),
+      .groups = "drop"
+    )
+}
+
+target_stats_sample1 <- create_target_stats(sets_sample1$target)
+target_stats_sample2 <- create_target_stats(sets_sample2$target)
+target_stats_sample3 <- create_target_stats(sets_sample3$target)
+target_stats_sample4 <- create_target_stats(sets_sample4$target)
+target_stats_sample5 <- create_target_stats(sets_sample5$target)
+
+tibble(
+  sample = 1:5,
+  target_rows = c(
+    nrow(target_stats_sample1),
+    nrow(target_stats_sample2),
+    nrow(target_stats_sample3),
+    nrow(target_stats_sample4),
+    nrow(target_stats_sample5)
+  )
+)
+```
+
+## 5.2 Create Training Clustering Dataset
+```{r}
+target_stats_train <- bind_rows(
+  target_stats_sample1 %>% mutate(sample = 1),
+  target_stats_sample2 %>% mutate(sample = 2),
+  target_stats_sample3 %>% mutate(sample = 3)
+)
+```
+## 5.3 Fit Training Clustering Model
+```{r}
+clustering_vars <- c(
+  "ngames",
+  "ndays",
+  "session_per_day",
+  "pwin_median",
+  "pwin_width",
+  "bet_mean_log10",
+  "bet_max_log10",
+  "payout_total"
+)
+
+scaled_target_train <- scale(
+  target_stats_train %>%
+    select(all_of(clustering_vars))
+)
+
+set.seed(123)
+
+km_train <- trimcluster::trimkmeans(
+  scaled_target_train,
+  k = 2,
+  trim = 0.01,
+  runs = 100
+)
+
+table(km_train$classification)
+```
+
+## 5.4 Inspect Cluster Characteristics
+```{r}
+clustered_train <- target_stats_train %>%
+  mutate(cluster = km_train$classification)
+
+clustered_train %>%
+  filter(cluster != 3) %>%
+  group_by(cluster) %>%
+  summarise(
+    n_players = n(),
+    median_ngames = median(ngames),
+    median_ndays = median(ndays),
+    median_session_per_day = median(session_per_day),
+    median_pwin = median(pwin_median),
+    median_pwin_width = median(pwin_width),
+    median_bet_mean = median(bet_mean_log10),
+    median_bet_max = median(bet_max_log10),
+    median_payout = median(payout_total)
+  )
+```
+```{r}
+clustered_train <- clustered_train %>%
+  mutate(
+    target = case_when(
+      cluster == 1 ~ "Casual",
+      cluster == 2 ~ "Intensive",
+      cluster == 3 ~ NA_character_
+    )
+  )
+table(clustered_train$target, useNA = "ifany")
+```
+```{r}
+km_train$means
+```
+## 5.5 Assign Test Players to Training Clusters
+```{r}
+train_center <- attr(scaled_target_train, "scaled:center")
+train_scale <- attr(scaled_target_train, "scaled:scale")
+
+scaled_target_sample4 <- scale(
+  target_stats_sample4 %>%
+    select(all_of(clustering_vars)),
+  center = train_center,
+  scale = train_scale
+)
+
+assign_nearest_cluster <- function(data, centers) {
+  apply(data, 1, function(player) {
+    distances <- apply(
+      centers,
+      1,
+      function(center) sum((player - center)^2)
+    )
+
+    which.min(distances)
+  })
+}
+
+target_stats_sample4 <- target_stats_sample4 %>%
+  mutate(
+    cluster = assign_nearest_cluster(
+      scaled_target_sample4,
+      km_train$means
+    ),
+    target = ifelse(
+      cluster == 1,
+      "Casual",
+      "Intensive"
+    )
+  )
+
+table(target_stats_sample4$target)
+```
+## 5.6 Assign Validation Players to Training Clusters
+```{r}
+scaled_target_sample5 <- scale(
+  target_stats_sample5 %>%
+    select(all_of(clustering_vars)),
+  center = train_center,
+  scale = train_scale
+)
+
+target_stats_sample5 <- target_stats_sample5 %>%
+  mutate(
+    cluster = assign_nearest_cluster(
+      scaled_target_sample5,
+      km_train$means
+    ),
+    target = ifelse(
+      cluster == 1,
+      "Casual",
+      "Intensive"
+    )
+  )
+
+table(target_stats_sample5$target)
+```
+
+# 6. Construct Predictor Features
+
+## 6.1 Static Features
+```{r}
+create_static_features <- function(observation_set) {
+  observation_set %>%
+    mutate(
+      log10_bet_value = log10(bet_value),
+      payout_value = answer_value - bet_value
+    ) %>%
+    group_by(userID) %>%
+    summarise(
+      static_ngames = log10(n()),
+      static_session_per_day = (sum(difftime > 3600) + 1) / n_distinct(date),
+      static_pwin_median = median(pwin),
+      static_pwin_width = max(pwin) - min(pwin),
+      static_bet_mean_log10 = mean(log10_bet_value),
+      static_bet_max_log10 = max(log10_bet_value),
+      static_payout_total = sum(payout_value),
+      .groups = "drop"
+    )
+}
+
+static_sample1 <- create_static_features(sets_sample1$observation)
+static_sample2 <- create_static_features(sets_sample2$observation)
+static_sample3 <- create_static_features(sets_sample3$observation)
+static_sample4 <- create_static_features(sets_sample4$observation)
+static_sample5 <- create_static_features(sets_sample5$observation)
+
+tibble(
+  sample = 1:5,
+  static_rows = c(
+    nrow(static_sample1),
+    nrow(static_sample2),
+    nrow(static_sample3),
+    nrow(static_sample4),
+    nrow(static_sample5)
+  )
+)
+```
+## 6.2 Temporal Features
+```{r}
+create_temporal_features <- function(observation_set) {
+
+  daily_temporal <- observation_set %>%
+    mutate(
+      log10_bet_value = log10(bet_value)
+    ) %>%
+    group_by(userID, active_day) %>%
+    summarise(
+      daily_ngames = log10(n()),
+      daily_sessions = sum(difftime > 3600) + 1,
+      daily_pwin_median = median(pwin),
+      daily_bet_mean_log10 = mean(log10_bet_value),
+      daily_bet_max_log10 = max(log10_bet_value),
+      .groups = "drop"
+    )
+
+  daily_temporal %>%
+    group_by(userID) %>%
+    summarise(
+      temporal_ngames_change =
+        daily_ngames[active_day == 3] - daily_ngames[active_day == 1],
+
+      temporal_sessions_change =
+        daily_sessions[active_day == 3] - daily_sessions[active_day == 1],
+
+      temporal_pwin_change =
+        daily_pwin_median[active_day == 3] - daily_pwin_median[active_day == 1],
+
+      temporal_bet_mean_change =
+        daily_bet_mean_log10[active_day == 3] -
+        daily_bet_mean_log10[active_day == 1],
+
+      temporal_bet_max_change =
+        daily_bet_max_log10[active_day == 3] -
+        daily_bet_max_log10[active_day == 1],
+
+      temporal_ngames_variability =
+        sd(daily_ngames),
+
+      temporal_pwin_variability =
+        sd(daily_pwin_median),
+
+      temporal_bet_mean_variability =
+        sd(daily_bet_mean_log10),
+
+      .groups = "drop"
+    )
+}
+
+temporal_sample1 <- create_temporal_features(sets_sample1$observation)
+temporal_sample2 <- create_temporal_features(sets_sample2$observation)
+temporal_sample3 <- create_temporal_features(sets_sample3$observation)
+temporal_sample4 <- create_temporal_features(sets_sample4$observation)
+temporal_sample5 <- create_temporal_features(sets_sample5$observation)
+
+tibble(
+  sample = 1:5,
+  temporal_rows = c(
+    nrow(temporal_sample1),
+    nrow(temporal_sample2),
+    nrow(temporal_sample3),
+    nrow(temporal_sample4),
+    nrow(temporal_sample5)
+  ),
+  missing_values = c(
+    sum(is.na(temporal_sample1)),
+    sum(is.na(temporal_sample2)),
+    sum(is.na(temporal_sample3)),
+    sum(is.na(temporal_sample4)),
+    sum(is.na(temporal_sample5))
+  )
+)
+```
+# 7. Construct Modeling Datasets
+
+## 7.1 Combine Features and Targets
+```{r}
+# Training labels from the clustering fitted on Samples 1-3
+train_labels <- clustered_train %>%
+  filter(!is.na(target)) %>%
+  select(sample, userID, target)
+
+# Build training feature table
+train_features <- bind_rows(
+  static_sample1 %>%
+    left_join(temporal_sample1, by = "userID") %>%
+    mutate(sample = 1),
+
+  static_sample2 %>%
+    left_join(temporal_sample2, by = "userID") %>%
+    mutate(sample = 2),
+
+  static_sample3 %>%
+    left_join(temporal_sample3, by = "userID") %>%
+    mutate(sample = 3)
+)
+
+train_master <- train_features %>%
+  inner_join(
+    train_labels,
+    by = c("sample", "userID")
+  )
+
+# Test table: Sample 4
+test_master <- static_sample4 %>%
+  left_join(temporal_sample4, by = "userID") %>%
+  mutate(sample = 4) %>%
+  inner_join(
+    target_stats_sample4 %>%
+      select(userID, target),
+    by = "userID"
+  )
+
+# Validation table: Sample 5
+validation_master <- static_sample5 %>%
+  left_join(temporal_sample5, by = "userID") %>%
+  mutate(sample = 5) %>%
+  inner_join(
+    target_stats_sample5 %>%
+      select(userID, target),
+    by = "userID"
+  )
+
+dim(train_master)
+dim(test_master)
+dim(validation_master)
+
+table(train_master$target)
+table(test_master$target)
+table(validation_master$target)
+```
+## 7.2 Create Static, Temporal, and Combined Model Tables
+```{r}
+# Make Intensive the positive class consistently
+train_master <- train_master %>%
+  mutate(target = factor(target, levels = c("Casual", "Intensive")))
+
+test_master <- test_master %>%
+  mutate(target = factor(target, levels = c("Casual", "Intensive")))
+
+validation_master <- validation_master %>%
+  mutate(target = factor(target, levels = c("Casual", "Intensive")))
+
+
+# Static model tables
+static_train <- train_master %>%
+  select(target, starts_with("static_"))
+
+static_test <- test_master %>%
+  select(target, starts_with("static_"))
+
+static_validation <- validation_master %>%
+  select(target, starts_with("static_"))
+
+
+# Temporal model tables
+temporal_train <- train_master %>%
+  select(target, starts_with("temporal_"))
+
+temporal_test <- test_master %>%
+  select(target, starts_with("temporal_"))
+
+temporal_validation <- validation_master %>%
+  select(target, starts_with("temporal_"))
+
+
+# Combined model tables
+combined_train <- train_master %>%
+  select(target, starts_with("static_"), starts_with("temporal_"))
+
+combined_test <- test_master %>%
+  select(target, starts_with("static_"), starts_with("temporal_"))
+
+combined_validation <- validation_master %>%
+  select(target, starts_with("static_"), starts_with("temporal_"))
+
+
+dim(static_train)
+dim(temporal_train)
+dim(combined_train)
+```
+
+# 8. Logistic Regression Analysis
+
+## 8.1 Fit Static, Temporal, and Combined Models
+
+```{r}
+logit_static <- glm(
+  target ~ .,
+  data = static_train,
+  family = binomial
+)
+
+logit_temporal <- glm(
+  target ~ .,
+  data = temporal_train,
+  family = binomial
+)
+
+logit_combined <- glm(
+  target ~ .,
+  data = combined_train,
+  family = binomial
+)
+
+summary(logit_static)
+summary(logit_temporal)
+summary(logit_combined)
+```
+
+## 8.2 Generate Test-Set Predictions
+```{r}
+static_test_prob <- predict(
+  logit_static,
+  newdata = static_test,
+  type = "response"
+)
+
+temporal_test_prob <- predict(
+  logit_temporal,
+  newdata = temporal_test,
+  type = "response"
+)
+
+combined_test_prob <- predict(
+  logit_combined,
+  newdata = combined_test,
+  type = "response"
+)
+
+head(static_test_prob)
+head(temporal_test_prob)
+head(combined_test_prob)
+
+range(static_test_prob)
+range(temporal_test_prob)
+range(combined_test_prob)
+```
+## 8.3 Test-Set ROC AUC and AUPRC
+```{r}
+# Actual Sample 4 labels
+test_actual <- test_master$target
+
+# ROC AUC
+static_roc <- pROC::roc(
+  test_actual,
+  static_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+temporal_roc <- pROC::roc(
+  test_actual,
+  temporal_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+combined_roc <- pROC::roc(
+  test_actual,
+  combined_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+
+# AUPRC
+static_pr <- PRROC::pr.curve(
+  scores.class0 = static_test_prob[test_actual == "Intensive"],
+  scores.class1 = static_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+temporal_pr <- PRROC::pr.curve(
+  scores.class0 = temporal_test_prob[test_actual == "Intensive"],
+  scores.class1 = temporal_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+combined_pr <- PRROC::pr.curve(
+  scores.class0 = combined_test_prob[test_actual == "Intensive"],
+  scores.class1 = combined_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+
+# Clean comparison table
+logit_test_results <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  ROC_AUC = c(
+    as.numeric(pROC::auc(static_roc)),
+    as.numeric(pROC::auc(temporal_roc)),
+    as.numeric(pROC::auc(combined_roc))
+  ),
+  AUPRC = c(
+    static_pr$auc.integral,
+    temporal_pr$auc.integral,
+    combined_pr$auc.integral
+  )
+)
+
+logit_test_results
+```
+## 8.4 Logistic Regression Model-Fit Comparison
+```{r}
+# AIC comparison
+AIC(
+  logit_static,
+  logit_temporal,
+  logit_combined
+)
+
+# Likelihood-ratio test:
+# Does adding Temporal features significantly improve
+# the Static model?
+anova(
+  logit_static,
+  logit_combined,
+  test = "LRT"
+)
+
+# Nagelkerke R-squared
+nagelkerke_r2 <- function(model) {
+
+  n <- nobs(model)
+
+  ll_model <- as.numeric(logLik(model))
+
+  null_model <- update(
+    model,
+    . ~ 1
+  )
+
+  ll_null <- as.numeric(logLik(null_model))
+
+  cox_snell <- 1 - exp(
+    (2 / n) * (ll_null - ll_model)
+  )
+
+  nagelkerke <- cox_snell /
+    (1 - exp((2 / n) * ll_null))
+
+  nagelkerke
+}
+
+r2_results <- tibble(
+  feature_set = c(
+    "Static",
+    "Temporal",
+    "Combined"
+  ),
+  Nagelkerke_R2 = c(
+    nagelkerke_r2(logit_static),
+    nagelkerke_r2(logit_temporal),
+    nagelkerke_r2(logit_combined)
+  )
+)
+
+r2_results
+```
+
+## 8.5 Final Validation-Set Performance
+```{r}
+# Generate Sample 5 predicted probabilities
+static_validation_prob <- predict(
+  logit_static,
+  newdata = static_validation,
+  type = "response"
+)
+
+temporal_validation_prob <- predict(
+  logit_temporal,
+  newdata = temporal_validation,
+  type = "response"
+)
+
+combined_validation_prob <- predict(
+  logit_combined,
+  newdata = combined_validation,
+  type = "response"
+)
+
+# Actual Sample 5 labels
+validation_actual <- validation_master$target
+
+
+# ROC AUC
+static_validation_roc <- pROC::roc(
+  validation_actual,
+  static_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+temporal_validation_roc <- pROC::roc(
+  validation_actual,
+  temporal_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+combined_validation_roc <- pROC::roc(
+  validation_actual,
+  combined_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+
+# AUPRC
+static_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    static_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    static_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+temporal_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    temporal_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    temporal_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+combined_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    combined_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    combined_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+
+# Final validation comparison
+logit_validation_results <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  ROC_AUC = c(
+    as.numeric(pROC::auc(static_validation_roc)),
+    as.numeric(pROC::auc(temporal_validation_roc)),
+    as.numeric(pROC::auc(combined_validation_roc))
+  ),
+  AUPRC = c(
+    static_validation_pr$auc.integral,
+    temporal_validation_pr$auc.integral,
+    combined_validation_pr$auc.integral
+  )
+)
+
+logit_validation_results
+```
+
+## 8.6 Logistic Regression Results Summary
+
+```{r}
+# Extract AIC values
+aic_results <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  AIC = c(
+    AIC(logit_static),
+    AIC(logit_temporal),
+    AIC(logit_combined)
+  )
+)
+
+# Extract likelihood-ratio test p-value
+lrt_result <- anova(
+  logit_static,
+  logit_combined,
+  test = "LRT"
+)
+
+lrt_p_value <- lrt_result$`Pr(>Chi)`[2]
+
+# Combine all Logistic Regression results
+logit_summary <- aic_results %>%
+  left_join(r2_results, by = "feature_set") %>%
+  left_join(
+    logit_test_results %>%
+      rename(
+        Test_ROC_AUC = ROC_AUC,
+        Test_AUPRC = AUPRC
+      ),
+    by = "feature_set"
+  ) %>%
+  left_join(
+    logit_validation_results %>%
+      rename(
+        Validation_ROC_AUC = ROC_AUC,
+        Validation_AUPRC = AUPRC
+      ),
+    by = "feature_set"
+  ) %>%
+  mutate(
+    LRT_vs_Static_p = case_when(
+      feature_set == "Combined" ~ lrt_p_value,
+      TRUE ~ NA_real_
+    )
+  )
+logit_summary <- logit_summary %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ round(.x, 3)
+    )
+  )
+
+logit_summary
+```
+# 9. Random Forest Analysis
+
+## 9.1 Fit Static, Temporal, and Combined Random Forest Models
+
+```{r}
+rf_static <- ranger::ranger(
+  target ~ .,
+  data = static_train,
+  probability = TRUE,
+  num.trees = 500,
+  seed = 123
+)
+
+rf_temporal <- ranger::ranger(
+  target ~ .,
+  data = temporal_train,
+  probability = TRUE,
+  num.trees = 500,
+  seed = 123
+)
+
+rf_combined <- ranger::ranger(
+  target ~ .,
+  data = combined_train,
+  probability = TRUE,
+  num.trees = 500,
+  seed = 123
+)
+
+rf_static
+rf_temporal
+rf_combined
+```
+## 9.2 Test-Set Performance
+
+```{r}
+rf_static_test_prob <- predict(
+  rf_static,
+  data = static_test
+)$predictions[, "Intensive"]
+
+rf_temporal_test_prob <- predict(
+  rf_temporal,
+  data = temporal_test
+)$predictions[, "Intensive"]
+
+rf_combined_test_prob <- predict(
+  rf_combined,
+  data = combined_test
+)$predictions[, "Intensive"]
+
+
+# ROC AUC
+rf_static_roc <- pROC::roc(
+  test_actual,
+  rf_static_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+rf_temporal_roc <- pROC::roc(
+  test_actual,
+  rf_temporal_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+rf_combined_roc <- pROC::roc(
+  test_actual,
+  rf_combined_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+
+# AUPRC
+rf_static_pr <- PRROC::pr.curve(
+  scores.class0 = rf_static_test_prob[test_actual == "Intensive"],
+  scores.class1 = rf_static_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+rf_temporal_pr <- PRROC::pr.curve(
+  scores.class0 = rf_temporal_test_prob[test_actual == "Intensive"],
+  scores.class1 = rf_temporal_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+rf_combined_pr <- PRROC::pr.curve(
+  scores.class0 = rf_combined_test_prob[test_actual == "Intensive"],
+  scores.class1 = rf_combined_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+
+rf_test_results <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  ROC_AUC = c(
+    as.numeric(pROC::auc(rf_static_roc)),
+    as.numeric(pROC::auc(rf_temporal_roc)),
+    as.numeric(pROC::auc(rf_combined_roc))
+  ),
+  AUPRC = c(
+    rf_static_pr$auc.integral,
+    rf_temporal_pr$auc.integral,
+    rf_combined_pr$auc.integral
+  )
+)%>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ round(.x, 3)
+    )
+  )
+
+rf_test_results
+```
+## 9.3 Validation-Set Performance
+
+```{r}
+rf_static_validation_prob <- predict(
+  rf_static,
+  data = static_validation
+)$predictions[, "Intensive"]
+
+rf_temporal_validation_prob <- predict(
+  rf_temporal,
+  data = temporal_validation
+)$predictions[, "Intensive"]
+
+rf_combined_validation_prob <- predict(
+  rf_combined,
+  data = combined_validation
+)$predictions[, "Intensive"]
+
+
+# ROC AUC
+rf_static_validation_roc <- pROC::roc(
+  validation_actual,
+  rf_static_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+rf_temporal_validation_roc <- pROC::roc(
+  validation_actual,
+  rf_temporal_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+rf_combined_validation_roc <- pROC::roc(
+  validation_actual,
+  rf_combined_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+
+# AUPRC
+rf_static_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    rf_static_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    rf_static_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+rf_temporal_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    rf_temporal_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    rf_temporal_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+rf_combined_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    rf_combined_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    rf_combined_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+
+rf_validation_results <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  ROC_AUC = c(
+    as.numeric(pROC::auc(rf_static_validation_roc)),
+    as.numeric(pROC::auc(rf_temporal_validation_roc)),
+    as.numeric(pROC::auc(rf_combined_validation_roc))
+  ),
+  AUPRC = c(
+    rf_static_validation_pr$auc.integral,
+    rf_temporal_validation_pr$auc.integral,
+    rf_combined_validation_pr$auc.integral
+  )
+) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ round(.x, 3)
+    )
+  )
+
+rf_validation_results
+```
+## 9.4 Random Forest Results Summary
+
+```{r}
+rf_summary <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  OOB_Brier = c(
+    rf_static$prediction.error,
+    rf_temporal$prediction.error,
+    rf_combined$prediction.error
+  )
+) %>%
+  left_join(
+    rf_test_results %>%
+      rename(
+        Test_ROC_AUC = ROC_AUC,
+        Test_AUPRC = AUPRC
+      ),
+    by = "feature_set"
+  ) %>%
+  left_join(
+    rf_validation_results %>%
+      rename(
+        Validation_ROC_AUC = ROC_AUC,
+        Validation_AUPRC = AUPRC
+      ),
+    by = "feature_set"
+  ) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ round(.x, 3)
+    )
+  )
+
+rf_summary
+```
+
+# 10. XGBoost Analysis
+
+## 10.1 Fit Static, Temporal, and Combined XGBoost Models
+
+```{r}
+xgb_static <- xgboost::xgboost(
+  x = static_train %>% select(-target),
+  y = static_train$target,
+  objective = "binary:logistic",
+  nrounds = 200,
+  max_depth = 3,
+  learning_rate = 0.05,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  seed = 123,
+  verbosity = 0
+)
+
+xgb_temporal <- xgboost::xgboost(
+  x = temporal_train %>% select(-target),
+  y = temporal_train$target,
+  objective = "binary:logistic",
+  nrounds = 200,
+  max_depth = 3,
+  learning_rate = 0.05,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  seed = 123,
+  verbosity = 0
+)
+
+xgb_combined <- xgboost::xgboost(
+  x = combined_train %>% select(-target),
+  y = combined_train$target,
+  objective = "binary:logistic",
+  nrounds = 200,
+  max_depth = 3,
+  learning_rate = 0.05,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  seed = 123,
+  verbosity = 0
+)
+
+xgb_static
+xgb_temporal
+xgb_combined
+```
+## 10.2 Test-Set Performance
+
+```{r}
+xgb_static_test_prob <- predict(
+  xgb_static,
+  newdata = static_test %>% select(-target)
+)
+
+xgb_temporal_test_prob <- predict(
+  xgb_temporal,
+  newdata = temporal_test %>% select(-target)
+)
+
+xgb_combined_test_prob <- predict(
+  xgb_combined,
+  newdata = combined_test %>% select(-target)
+)
+
+
+# ROC AUC
+xgb_static_roc <- pROC::roc(
+  test_actual,
+  xgb_static_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+xgb_temporal_roc <- pROC::roc(
+  test_actual,
+  xgb_temporal_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+xgb_combined_roc <- pROC::roc(
+  test_actual,
+  xgb_combined_test_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+
+# AUPRC
+xgb_static_pr <- PRROC::pr.curve(
+  scores.class0 = xgb_static_test_prob[test_actual == "Intensive"],
+  scores.class1 = xgb_static_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+xgb_temporal_pr <- PRROC::pr.curve(
+  scores.class0 = xgb_temporal_test_prob[test_actual == "Intensive"],
+  scores.class1 = xgb_temporal_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+xgb_combined_pr <- PRROC::pr.curve(
+  scores.class0 = xgb_combined_test_prob[test_actual == "Intensive"],
+  scores.class1 = xgb_combined_test_prob[test_actual == "Casual"],
+  curve = FALSE
+)
+
+
+xgb_test_results <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  ROC_AUC = c(
+    as.numeric(pROC::auc(xgb_static_roc)),
+    as.numeric(pROC::auc(xgb_temporal_roc)),
+    as.numeric(pROC::auc(xgb_combined_roc))
+  ),
+  AUPRC = c(
+    xgb_static_pr$auc.integral,
+    xgb_temporal_pr$auc.integral,
+    xgb_combined_pr$auc.integral
+  )
+) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ round(.x, 3)
+    )
+  )
+
+xgb_test_results
+```
+
+## 10.3 Validation-Set Performance
+
+```{r}
+xgb_static_validation_prob <- predict(
+  xgb_static,
+  newdata = static_validation %>% select(-target)
+)
+
+xgb_temporal_validation_prob <- predict(
+  xgb_temporal,
+  newdata = temporal_validation %>% select(-target)
+)
+
+xgb_combined_validation_prob <- predict(
+  xgb_combined,
+  newdata = combined_validation %>% select(-target)
+)
+
+
+# ROC AUC
+xgb_static_validation_roc <- pROC::roc(
+  validation_actual,
+  xgb_static_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+xgb_temporal_validation_roc <- pROC::roc(
+  validation_actual,
+  xgb_temporal_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+xgb_combined_validation_roc <- pROC::roc(
+  validation_actual,
+  xgb_combined_validation_prob,
+  levels = c("Casual", "Intensive"),
+  direction = "<",
+  quiet = TRUE
+)
+
+
+# AUPRC
+xgb_static_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    xgb_static_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    xgb_static_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+xgb_temporal_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    xgb_temporal_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    xgb_temporal_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+xgb_combined_validation_pr <- PRROC::pr.curve(
+  scores.class0 =
+    xgb_combined_validation_prob[validation_actual == "Intensive"],
+  scores.class1 =
+    xgb_combined_validation_prob[validation_actual == "Casual"],
+  curve = FALSE
+)
+
+
+xgb_validation_results <- tibble(
+  feature_set = c("Static", "Temporal", "Combined"),
+  ROC_AUC = c(
+    as.numeric(pROC::auc(xgb_static_validation_roc)),
+    as.numeric(pROC::auc(xgb_temporal_validation_roc)),
+    as.numeric(pROC::auc(xgb_combined_validation_roc))
+  ),
+  AUPRC = c(
+    xgb_static_validation_pr$auc.integral,
+    xgb_temporal_validation_pr$auc.integral,
+    xgb_combined_validation_pr$auc.integral
+  )
+) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ round(.x, 3)
+    )
+  )
+
+xgb_validation_results
+```
+## 10.4 XGBoost Results Summary
+
+```{r}
+xgb_summary <- xgb_test_results %>%
+  rename(
+    Test_ROC_AUC = ROC_AUC,
+    Test_AUPRC = AUPRC
+  ) %>%
+  left_join(
+    xgb_validation_results %>%
+      rename(
+        Validation_ROC_AUC = ROC_AUC,
+        Validation_AUPRC = AUPRC
+      ),
+    by = "feature_set"
+  )
+
+xgb_summary
+```
+# 11. SHAP Analysis
+
+## 11.1 Compute SHAP Values and Global Feature Importance
+
+```{r}
+# Validation predictors used by the Combined XGBoost model
+shap_X <- combined_validation %>%
+  select(-target)
+
+# Convert to numeric matrix
+shap_X_matrix <- data.matrix(shap_X)
+
+# Calculate SHAP contributions directly from XGBoost
+shap_raw <- predict(
+  xgb_combined,
+  newdata = shap_X_matrix,
+  type = "contrib"
+)
+
+# Verify expected shape:
+# 260 validation players x 16 columns
+# (15 predictors + 1 intercept/bias column)
+dim(shap_raw)
+colnames(shap_raw)
+
+# Separate predictor SHAP values from the final bias column
+shap_values <- shap_raw[, 1:(ncol(shap_raw) - 1), drop = FALSE]
+
+# Ensure predictor names match
+colnames(shap_values) <- colnames(shap_X_matrix)
+
+# Baseline/intercept contribution
+shap_baseline <- mean(shap_raw[, ncol(shap_raw)])
+
+# Create shapviz object
+shap_combined <- shapviz::shapviz(
+  shap_values,
+  X = shap_X,
+  baseline = shap_baseline
+)
+
+# Global SHAP importance
+shap_importance <- tibble(
+  feature = colnames(shap_values),
+  mean_abs_shap = colMeans(abs(shap_values))
+) %>%
+  mutate(
+    feature_type = if_else(
+      str_starts(feature, "static_"),
+      "Static",
+      "Temporal"
+    )
+  ) %>%
+  arrange(desc(mean_abs_shap)) %>%
+  mutate(
+    mean_abs_shap = round(mean_abs_shap, 3)
+  )
+
+shap_importance
+```
+
+
+## 11.2 SHAP Importance by Feature Type
+
+```{r}
+shap_type_importance <- shap_importance %>%
+  group_by(feature_type) %>%
+  summarise(
+    total_mean_abs_shap = sum(mean_abs_shap),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    proportion = total_mean_abs_shap / sum(total_mean_abs_shap)
+  ) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ round(.x, 3)
+    )
+  )
+
+shap_type_importance
+```
+
+## 11.3 SHAP Beeswarm Plot
+
+```{r}
+shapviz::sv_importance(
+  shap_combined,
+  kind = "bee",
+  max_display = 15
+)
+```
